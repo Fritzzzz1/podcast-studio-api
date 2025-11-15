@@ -7,8 +7,8 @@ import { errorHandler, notFoundHandler } from './middleware/errorHandler';
 
 // Import routes
 import authRoutes from './routes/auth.routes';
-// import userRoutes from './routes/user.routes';
-// import projectRoutes from './routes/project.routes';
+import userRoutes from './routes/user.routes';
+import projectRoutes from './routes/project.routes';
 
 const app: Application = express();
 
@@ -55,8 +55,8 @@ const apiPrefix = `/api/${config.apiVersion}`;
 
 // Mount routes
 app.use(`${apiPrefix}/auth`, authRoutes);
-// app.use(`${apiPrefix}/users`, userRoutes);
-// app.use(`${apiPrefix}/projects`, projectRoutes);
+app.use(`${apiPrefix}/users`, userRoutes);
+app.use(`${apiPrefix}/projects`, projectRoutes);
 
 // Error handling
 app.use(notFoundHandler);
