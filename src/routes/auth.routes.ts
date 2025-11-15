@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { asyncHandler } from '../middleware/asyncHandler';
 import { validate } from '../middleware/validate';
+import { authLimiter } from '../middleware/rateLimiter';
 import * as authController from '../controllers/auth.controller';
 import {
   signupSchema,
@@ -11,6 +12,9 @@ import {
 } from '../validators/auth.validator';
 
 const router = Router();
+
+// Apply rate limiting to all auth routes
+router.use(authLimiter);
 
 /**
  * @route   POST /api/v1/auth/signup

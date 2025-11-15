@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { asyncHandler } from '../middleware/asyncHandler';
 import { authenticate } from '../middleware/auth';
 import { validate } from '../middleware/validate';
+import { createProjectLimiter } from '../middleware/rateLimiter';
 import * as projectController from '../controllers/project.controller';
 import {
   createProjectSchema,
@@ -24,6 +25,7 @@ router.get('/', authenticate, asyncHandler(projectController.listProjects));
  */
 router.post(
   '/',
+  createProjectLimiter,
   authenticate,
   validate(createProjectSchema),
   asyncHandler(projectController.createProject)
