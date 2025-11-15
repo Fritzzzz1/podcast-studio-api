@@ -238,6 +238,108 @@ export const deleteProject = async (req: AuthRequest, res: Response) => {
   });
 };
 
+export const syncProject = async (req: AuthRequest, res: Response) => {
+  if (!req.userId) {
+    throw new ApiError(401, 'User not authenticated');
+  }
+
+  const { id } = req.params;
+  const { project } = req.body;
+
+  // Check ownership
+  const projectResult = await query<Project>(
+    'SELECT * FROM projects WHERE id = $1 AND deleted_at IS NULL',
+    [id]
+  );
+
+  if (projectResult.rows.length === 0) {
+    throw new ApiError(404, 'Project not found');
+  }
+
+  if (projectResult.rows[0].user_id !== req.userId) {
+    throw new ApiError(403, 'Only project owner can sync the project');
+  }
+
+  // Update project
+  const updateFields: string[] = [];
+  const values: unknown[] = [];
+  let paramIndex = 1;
+
+  if (project.name !== undefined) {
+    updateFields.push(`name = $${paramIndex++}`);
+    values.push(project.name);
+  }
+
+  if (project.description !== undefined) {
+    updateFields.push(`description = $${paramIndex++}`);
+    values.push(project.description);
+  }
+
+  if (project.coverImageUrl !== undefined) {
+    updateFields.push(`cover_image_url = $${paramIndex++}`);
+    values.push(project.coverImageUrl);
+  }
+
+  updateFields.push(`last_synced_at = NOW()`);
+  values.push(id);
+
+  const updatedProject = await query<Project>(
+    `UPDATE projects
+     SET ${updateFields.join(', ')}
+     WHERE id = $${paramIndex}
+     RETURNING *`,
+    values
+  );
+
+  // Return the synced project
+  res.status(200).json({
+    success: true,
+    data: {
+      project: updatedProject.rows[0],
+      syncedAt: new Date().toISOString(),
+    },
+  });
+};
+
+export const getSyncStatus = async (req: AuthRequest, res: Response) => {
+  if (!req.userId) {
+    throw new ApiError(401, 'User not authenticated');
+  }
+
+  const { id } = req.params;
+
+  // Check ownership or collaborator access
+  const projectResult = await query<Project>(
+    'SELECT * FROM projects WHERE id = $1 AND deleted_at IS NULL',
+    [id]
+  );
+
+  if (projectResult.rows.length === 0) {
+    throw new ApiError(404, 'Project not found');
+  }
+
+  const project = projectResult.rows[0];
+
+  const hasAccess =
+    project.user_id === req.userId ||
+    (await checkCollaboratorAccess(id, req.userId));
+
+  if (!hasAccess) {
+    throw new ApiError(403, 'Access denied to this project');
+  }
+
+  res.status(200).json({
+    success: true,
+    data: {
+      lastSyncedAt: project.last_synced_at,
+      updatedAt: project.updated_at,
+      needsSync: project.last_synced_at
+        ? new Date(project.updated_at) > new Date(project.last_synced_at)
+        : true,
+    },
+  });
+};
+
 // Helper function to check collaborator access
 const checkCollaboratorAccess = async (
   projectId: string,

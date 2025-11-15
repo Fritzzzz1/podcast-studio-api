@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import { query } from '../db';
 import { hashPassword, comparePassword } from '../utils/password';
 import { generateAccessToken, generateRefreshToken, verifyRefreshToken } from '../utils/jwt';
-import { ApiError, User, SafeUser } from '../types';
+import { ApiError, User } from '../types';
 import {
   SignupInput,
   LoginInput,
@@ -135,7 +135,7 @@ export const refresh = async (req: Request, res: Response) => {
   });
 };
 
-export const logout = async (req: Request, res: Response) => {
+export const logout = async (_req: Request, res: Response) => {
   // In a more sophisticated implementation, you might want to:
   // 1. Blacklist the refresh token in Redis
   // 2. Revoke all sessions
@@ -150,7 +150,7 @@ export const logout = async (req: Request, res: Response) => {
 export const forgotPassword = async (req: Request, res: Response) => {
   // TODO: Implement password reset email with token
   // For now, just return success
-  const { email } = req.body;
+  const { email: _email } = req.body;
 
   res.status(200).json({
     success: true,
@@ -158,7 +158,7 @@ export const forgotPassword = async (req: Request, res: Response) => {
   });
 };
 
-export const resetPassword = async (req: Request, res: Response) => {
+export const resetPassword = async (_req: Request, res: Response) => {
   // TODO: Implement password reset with token validation
   // For now, just return success
   res.status(200).json({
