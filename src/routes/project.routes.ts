@@ -57,4 +57,22 @@ router.put(
  */
 router.delete('/:id', authenticate, asyncHandler(projectController.deleteProject));
 
+/**
+ * @route   POST /api/v1/projects/:id/sync
+ * @desc    Sync project from mobile app
+ * @access  Private
+ */
+router.post('/:id/sync', authenticate, asyncHandler(projectController.syncProject));
+
+/**
+ * @route   GET /api/v1/projects/:id/sync-status
+ * @desc    Get sync status
+ * @access  Private
+ */
+router.get(
+  '/:id/sync-status',
+  authenticate,
+  asyncHandler(projectController.getSyncStatus)
+);
+
 export default router;

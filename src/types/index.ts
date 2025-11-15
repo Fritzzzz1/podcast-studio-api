@@ -4,120 +4,120 @@ import { Request } from 'express';
 export interface User {
   id: string;
   email: string;
-  passwordHash?: string;
-  fullName: string | null;
-  avatarUrl: string | null;
-  oauthProvider: 'google' | 'apple' | null;
-  oauthId: string | null;
-  subscriptionTier: 'free' | 'pro' | 'enterprise';
-  storageQuotaBytes: number;
-  storageUsedBytes: number;
-  createdAt: Date;
-  updatedAt: Date;
-  lastLoginAt: Date | null;
-  isActive: boolean;
-  emailVerified: boolean;
+  password_hash?: string;
+  full_name: string | null;
+  avatar_url: string | null;
+  oauth_provider: 'google' | 'apple' | null;
+  oauth_id: string | null;
+  subscription_tier: 'free' | 'pro' | 'enterprise';
+  storage_quota_bytes: number;
+  storage_used_bytes: number;
+  created_at: Date;
+  updated_at: Date;
+  last_login_at: Date | null;
+  is_active: boolean;
+  email_verified: boolean;
 }
 
-export interface SafeUser extends Omit<User, 'passwordHash'> {}
+export interface SafeUser extends Omit<User, 'password_hash'> {}
 
 // Project Types
 export interface Project {
   id: string;
-  userId: string;
+  user_id: string;
   name: string;
   description: string | null;
-  coverImageUrl: string | null;
+  cover_image_url: string | null;
   category: string | null;
-  isPublic: boolean;
-  createdAt: Date;
-  updatedAt: Date;
-  lastSyncedAt: Date | null;
-  deletedAt: Date | null;
+  is_public: boolean;
+  created_at: Date;
+  updated_at: Date;
+  last_synced_at: Date | null;
+  deleted_at: Date | null;
 }
 
 // Episode Types
 export interface Episode {
   id: string;
-  projectId: string;
+  project_id: string;
   title: string;
   description: string | null;
-  durationSeconds: number | null;
-  audioFileUrl: string | null;
-  audioFileSizeBytes: number | null;
-  waveformData: unknown | null;
-  recordedAt: Date | null;
-  templateId: string | null;
+  duration_seconds: number | null;
+  audio_file_url: string | null;
+  audio_file_size_bytes: number | null;
+  waveform_data: unknown | null;
+  recorded_at: Date | null;
+  template_id: string | null;
   status: 'draft' | 'processing' | 'ready';
-  createdAt: Date;
-  updatedAt: Date;
-  deletedAt: Date | null;
+  created_at: Date;
+  updated_at: Date;
+  deleted_at: Date | null;
 }
 
 // Template Types
 export interface Template {
   id: string;
-  creatorId: string | null;
+  creator_id: string | null;
   name: string;
   description: string | null;
   icon: string | null;
   category: string | null;
   config: unknown;
-  isDefault: boolean;
-  isPublic: boolean;
-  isFeatured: boolean;
-  downloadCount: number;
-  averageRating: number | null;
-  createdAt: Date;
-  updatedAt: Date;
+  is_default: boolean;
+  is_public: boolean;
+  is_featured: boolean;
+  download_count: number;
+  average_rating: number | null;
+  created_at: Date;
+  updated_at: Date;
 }
 
 // Template Rating Types
 export interface TemplateRating {
   id: string;
-  templateId: string;
-  userId: string;
+  template_id: string;
+  user_id: string;
   rating: number;
   review: string | null;
-  createdAt: Date;
+  created_at: Date;
 }
 
 // Collaborator Types
 export interface ProjectCollaborator {
   id: string;
-  projectId: string;
-  userId: string;
-  permissionLevel: 'view' | 'comment' | 'edit';
-  invitedBy: string | null;
-  invitedAt: Date;
-  acceptedAt: Date | null;
+  project_id: string;
+  user_id: string;
+  permission_level: 'view' | 'comment' | 'edit';
+  invited_by: string | null;
+  invited_at: Date;
+  accepted_at: Date | null;
 }
 
 // Comment Types
 export interface Comment {
   id: string;
-  episodeId: string;
-  userId: string | null;
-  parentCommentId: string | null;
+  episode_id: string;
+  user_id: string | null;
+  parent_comment_id: string | null;
   content: string;
-  timestampSeconds: number | null;
-  isResolved: boolean;
-  createdAt: Date;
-  updatedAt: Date;
+  timestamp_seconds: number | null;
+  is_resolved: boolean;
+  created_at: Date;
+  updated_at: Date;
 }
 
 // Subscription Types
 export interface Subscription {
   id: string;
-  userId: string;
-  stripeCustomerId: string | null;
-  stripeSubscriptionId: string | null;
-  planId: string | null;
+  user_id: string;
+  stripe_customer_id: string | null;
+  stripe_subscription_id: string | null;
+  plan_id: string | null;
   status: 'active' | 'canceled' | 'past_due' | null;
-  currentPeriodStart: Date | null;
-  currentPeriodEnd: Date | null;
-  createdAt: Date;
-  updatedAt: Date;
+  current_period_start: Date | null;
+  current_period_end: Date | null;
+  created_at: Date;
+  updated_at: Date;
 }
 
 // JWT Payload

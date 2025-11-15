@@ -16,13 +16,11 @@ export const errorHandler = (
   // Default error values
   let statusCode = 500;
   let message = 'Internal Server Error';
-  let isOperational = false;
 
   // Handle ApiError
   if (err instanceof ApiError) {
     statusCode = err.statusCode;
     message = err.message;
-    isOperational = err.isOperational;
   }
 
   // Log error

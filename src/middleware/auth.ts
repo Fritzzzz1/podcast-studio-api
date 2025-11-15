@@ -6,7 +6,7 @@ import { User } from '../types';
 
 export const authenticate = async (
   req: AuthRequest,
-  res: Response,
+  _res: Response,
   next: NextFunction
 ) => {
   try {
@@ -32,7 +32,7 @@ export const authenticate = async (
     const user = result.rows[0];
 
     // Remove password hash before attaching to request
-    const { password_hash, ...safeUser } = user;
+    const { password_hash: _password_hash, ...safeUser } = user;
     req.user = safeUser as any;
     req.userId = user.id;
 
