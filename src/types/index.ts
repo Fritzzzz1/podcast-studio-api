@@ -106,6 +106,20 @@ export interface Comment {
   updated_at: Date;
 }
 
+export interface CommentWithUser extends Comment {
+  full_name: string | null;
+  avatar_url: string | null;
+  email: string;
+}
+
+export interface CommentWithReplies extends CommentWithUser {
+  replies: CommentWithReplies[];
+}
+
+export interface EpisodeWithProjectOwner extends Episode {
+  project_owner_id: string;
+}
+
 // Subscription Types
 export interface Subscription {
   id: string;

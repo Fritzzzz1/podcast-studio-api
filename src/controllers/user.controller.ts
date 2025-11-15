@@ -2,6 +2,8 @@ import { Response } from 'express';
 import { query } from '../db';
 import { AuthRequest, ApiError, User } from '../types';
 import { UpdateUserInput } from '../validators/user.validator';
+import { buildUpdateQuery, keysToSnakeCase } from '../utils/queryBuilder';
+import { getStorageInfo, getStorageUsageByProject } from '../utils/storage';
 
 export const getCurrentUser = async (req: AuthRequest, res: Response) => {
   if (!req.userId) {
@@ -31,37 +33,28 @@ export const updateCurrentUser = async (req: AuthRequest, res: Response) => {
     throw new ApiError(401, 'User not authenticated');
   }
 
-  const { fullName, avatarUrl } = req.body as UpdateUserInput;
+  const updates = req.body as UpdateUserInput;
 
-  const updates: string[] = [];
-  const values: unknown[] = [];
-  let paramIndex = 1;
+  // Convert camelCase to snake_case for database columns
+  const dbUpdates = keysToSnakeCase(updates as Record<string, unknown>);
 
-  if (fullName !== undefined) {
-    updates.push(`full_name = $${paramIndex++}`);
-    values.push(fullName);
-  }
-
-  if (avatarUrl !== undefined) {
-    updates.push(`avatar_url = $${paramIndex++}`);
-    values.push(avatarUrl);
-  }
-
-  if (updates.length === 0) {
-    throw new ApiError(400, 'No fields to update');
-  }
-
-  values.push(req.userId);
-
-  const result = await query<User>(
-    `UPDATE users
-     SET ${updates.join(', ')}
-     WHERE id = $${paramIndex}
-     RETURNING id, email, full_name, avatar_url, oauth_provider, oauth_id,
-               subscription_tier, storage_quota_bytes, storage_used_bytes,
-               created_at, updated_at, last_login_at, is_active, email_verified`,
-    values
+  // Build the update query
+  const { query: updateQuery, params } = buildUpdateQuery(
+    'users',
+    dbUpdates,
+    'id = $1',
+    [req.userId]
   );
+
+  // Modify the query to specify the fields to return
+  const queryWithReturning = updateQuery.replace(
+    'RETURNING *',
+    `RETURNING id, email, full_name, avatar_url, oauth_provider, oauth_id,
+               subscription_tier, storage_quota_bytes, storage_used_bytes,
+               created_at, updated_at, last_login_at, is_active, email_verified`
+  );
+
+  const result = await query<User>(queryWithReturning, params);
 
   res.status(200).json({
     success: true,
@@ -94,42 +87,23 @@ export const getStorageUsage = async (req: AuthRequest, res: Response) => {
     throw new ApiError(401, 'User not authenticated');
   }
 
-  // Get user storage info
-  const userResult = await query<User>(
-    `SELECT storage_quota_bytes, storage_used_bytes
-     FROM users WHERE id = $1`,
-    [req.userId]
-  );
+  // Get user storage info using utility
+  const storageInfo = await getStorageInfo(req.userId);
 
-  if (userResult.rows.length === 0) {
-    throw new ApiError(404, 'User not found');
-  }
-
-  const user = userResult.rows[0];
-
-  // Get storage usage by project
-  const projectsResult = await query<{
-    project_id: string;
-    project_name: string;
-    total_size: number;
-  }>(
-    `SELECT p.id as project_id, p.name as project_name,
-            COALESCE(SUM(e.audio_file_size_bytes), 0) as total_size
-     FROM projects p
-     LEFT JOIN episodes e ON e.project_id = p.id AND e.deleted_at IS NULL
-     WHERE p.user_id = $1 AND p.deleted_at IS NULL
-     GROUP BY p.id, p.name
-     ORDER BY total_size DESC`,
-    [req.userId]
-  );
+  // Get storage usage by project using utility
+  const usageByProject = await getStorageUsageByProject(req.userId);
 
   res.status(200).json({
     success: true,
     data: {
-      used: user.storage_used_bytes,
-      quota: user.storage_quota_bytes,
-      usagePercentage: (user.storage_used_bytes / user.storage_quota_bytes) * 100,
-      usageByProject: projectsResult.rows,
+      used: storageInfo.used,
+      quota: storageInfo.quota,
+      usagePercentage: storageInfo.usagePercentage,
+      usageByProject: usageByProject.map((project) => ({
+        project_id: project.projectId,
+        project_name: project.projectName,
+        total_size: project.storageBytes,
+      })),
     },
   });
 };

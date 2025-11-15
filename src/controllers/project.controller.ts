@@ -4,22 +4,34 @@ import { AuthRequest, ApiError, Project, Episode } from '../types';
 import {
   CreateProjectInput,
   UpdateProjectInput,
-  ListProjectsQuery,
 } from '../validators/project.validator';
+import { checkCollaboratorAccess } from '../utils/accessControl';
+import {
+  buildUpdateQuery,
+  keysToSnakeCase,
+  sanitizeSortColumn,
+  sanitizeSortDirection,
+} from '../utils/queryBuilder';
+import {
+  parsePaginationParams,
+  calculateOffset,
+  executePaginatedQuery,
+} from '../utils/pagination';
 
 export const listProjects = async (req: AuthRequest, res: Response) => {
   if (!req.userId) {
     throw new ApiError(401, 'User not authenticated');
   }
 
-  const {
-    page = 1,
-    limit = 20,
-    sortBy = 'updatedAt',
-    order = 'desc',
-  } = req.query as unknown as ListProjectsQuery;
+  // Parse and validate pagination parameters
+  const { page, limit, sortBy = 'updatedAt', order = 'desc' } = parsePaginationParams(req.query, {
+    page: 1,
+    limit: 20,
+    sortBy: 'updatedAt',
+    order: 'desc',
+  });
 
-  const offset = (page - 1) * limit;
+  const offset = calculateOffset(page, limit);
 
   // Map sortBy to actual column names
   const columnMap: Record<string, string> = {
@@ -28,34 +40,35 @@ export const listProjects = async (req: AuthRequest, res: Response) => {
     name: 'name',
   };
 
-  const orderByColumn = columnMap[sortBy] || 'updated_at';
-  const orderDirection = order === 'asc' ? 'ASC' : 'DESC';
-
-  // Get total count
-  const countResult = await query<{ count: string }>(
-    'SELECT COUNT(*) FROM projects WHERE user_id = $1 AND deleted_at IS NULL',
-    [req.userId]
+  // Sanitize sort parameters
+  const orderByColumn = sanitizeSortColumn(
+    columnMap[sortBy] || sortBy,
+    ['created_at', 'updated_at', 'name'],
+    'updated_at'
   );
+  const orderDirection = sanitizeSortDirection(order, 'DESC');
 
-  const total = parseInt(countResult.rows[0].count, 10);
-
-  // Get projects
-  const result = await query<Project>(
+  // Execute paginated query
+  const result = await executePaginatedQuery<Project>(
     `SELECT * FROM projects
      WHERE user_id = $1 AND deleted_at IS NULL
      ORDER BY ${orderByColumn} ${orderDirection}
      LIMIT $2 OFFSET $3`,
-    [req.userId, limit, offset]
+    [req.userId, limit, offset],
+    'SELECT COUNT(*) FROM projects WHERE user_id = $1 AND deleted_at IS NULL',
+    [req.userId],
+    page,
+    limit
   );
 
   res.status(200).json({
     success: true,
     data: {
-      projects: result.rows,
-      total,
-      page,
-      pages: Math.ceil(total / limit),
-      limit,
+      projects: result.data,
+      total: result.total,
+      page: result.page,
+      pages: result.pages,
+      limit: result.limit,
     },
   });
 };
@@ -159,48 +172,16 @@ export const updateProject = async (req: AuthRequest, res: Response) => {
     throw new ApiError(403, 'Only project owner can update the project');
   }
 
-  const updateFields: string[] = [];
-  const values: unknown[] = [];
-  let paramIndex = 1;
-
-  if (updates.name !== undefined) {
-    updateFields.push(`name = $${paramIndex++}`);
-    values.push(updates.name);
-  }
-
-  if (updates.description !== undefined) {
-    updateFields.push(`description = $${paramIndex++}`);
-    values.push(updates.description);
-  }
-
-  if (updates.coverImageUrl !== undefined) {
-    updateFields.push(`cover_image_url = $${paramIndex++}`);
-    values.push(updates.coverImageUrl);
-  }
-
-  if (updates.category !== undefined) {
-    updateFields.push(`category = $${paramIndex++}`);
-    values.push(updates.category);
-  }
-
-  if (updates.isPublic !== undefined) {
-    updateFields.push(`is_public = $${paramIndex++}`);
-    values.push(updates.isPublic);
-  }
-
-  if (updateFields.length === 0) {
-    throw new ApiError(400, 'No fields to update');
-  }
-
-  values.push(id);
-
-  const result = await query<Project>(
-    `UPDATE projects
-     SET ${updateFields.join(', ')}
-     WHERE id = $${paramIndex}
-     RETURNING *`,
-    values
+  // Convert camelCase to snake_case and build update query
+  const snakeCaseUpdates = keysToSnakeCase(updates);
+  const { query: updateQuery, params } = buildUpdateQuery(
+    'projects',
+    snakeCaseUpdates,
+    'id = $1',
+    [id]
   );
+
+  const result = await query<Project>(updateQuery, params);
 
   res.status(200).json({
     success: true,
@@ -260,36 +241,25 @@ export const syncProject = async (req: AuthRequest, res: Response) => {
     throw new ApiError(403, 'Only project owner can sync the project');
   }
 
-  // Update project
-  const updateFields: string[] = [];
-  const values: unknown[] = [];
-  let paramIndex = 1;
+  // Convert camelCase to snake_case and add last_synced_at
+  const snakeCaseProject = keysToSnakeCase(project);
+  const updatesWithSync = {
+    ...snakeCaseProject,
+    last_synced_at: 'NOW()',
+  };
 
-  if (project.name !== undefined) {
-    updateFields.push(`name = $${paramIndex++}`);
-    values.push(project.name);
-  }
-
-  if (project.description !== undefined) {
-    updateFields.push(`description = $${paramIndex++}`);
-    values.push(project.description);
-  }
-
-  if (project.coverImageUrl !== undefined) {
-    updateFields.push(`cover_image_url = $${paramIndex++}`);
-    values.push(project.coverImageUrl);
-  }
-
-  updateFields.push(`last_synced_at = NOW()`);
-  values.push(id);
-
-  const updatedProject = await query<Project>(
-    `UPDATE projects
-     SET ${updateFields.join(', ')}
-     WHERE id = $${paramIndex}
-     RETURNING *`,
-    values
+  // Build update query
+  const { query: updateQuery, params } = buildUpdateQuery(
+    'projects',
+    updatesWithSync,
+    'id = $1',
+    [id]
   );
+
+  // Replace NOW() placeholder with actual SQL function
+  const finalQuery = updateQuery.replace("'NOW()'", 'NOW()');
+
+  const updatedProject = await query<Project>(finalQuery, params);
 
   // Return the synced project
   res.status(200).json({
@@ -338,18 +308,4 @@ export const getSyncStatus = async (req: AuthRequest, res: Response) => {
         : true,
     },
   });
-};
-
-// Helper function to check collaborator access
-const checkCollaboratorAccess = async (
-  projectId: string,
-  userId: string
-): Promise<boolean> => {
-  const result = await query(
-    `SELECT id FROM project_collaborators
-     WHERE project_id = $1 AND user_id = $2`,
-    [projectId, userId]
-  );
-
-  return result.rows.length > 0;
 };

@@ -1,31 +1,23 @@
 import { Response } from 'express';
 import { query } from '../db';
-import { AuthRequest, ApiError, Episode } from '../types';
-
-interface Comment {
-  id: string;
-  episode_id: string;
-  user_id: string;
-  parent_comment_id: string | null;
-  content: string;
-  timestamp_seconds: number | null;
-  is_resolved: boolean;
-  created_at: Date;
-  updated_at: Date;
-}
-
-interface CreateCommentInput {
-  content: string;
-  timestampSeconds?: number;
-}
-
-interface ReplyCommentInput {
-  content: string;
-}
-
-interface UpdateCommentInput {
-  content: string;
-}
+import {
+  AuthRequest,
+  ApiError,
+  Comment,
+  CommentWithUser,
+  CommentWithReplies,
+  EpisodeWithProjectOwner,
+} from '../types';
+import {
+  checkCollaboratorAccess,
+  checkCollaboratorPermission,
+  checkProjectOwnership,
+} from '../utils/accessControl';
+import {
+  CreateCommentInput,
+  ReplyCommentInput,
+  UpdateCommentInput,
+} from '../validators/comment.validator';
 
 export const getEpisodeComments = async (req: AuthRequest, res: Response) => {
   if (!req.userId) {
@@ -35,7 +27,7 @@ export const getEpisodeComments = async (req: AuthRequest, res: Response) => {
   const { id } = req.params;
 
   // Check if episode exists and user has access
-  const episodeResult = await query<Episode>(
+  const episodeResult = await query<EpisodeWithProjectOwner>(
     `SELECT e.*, p.user_id as project_owner_id
      FROM episodes e
      JOIN projects p ON p.id = e.project_id
@@ -50,16 +42,18 @@ export const getEpisodeComments = async (req: AuthRequest, res: Response) => {
   const episode = episodeResult.rows[0];
 
   // Check if user has access to the project
-  const hasAccess =
-    episode.project_owner_id === req.userId ||
-    (await checkCollaboratorAccess(episode.project_id, req.userId));
+  const isOwner = await checkProjectOwnership(episode.project_id, req.userId);
+  const hasCollaboratorAccess = await checkCollaboratorAccess(
+    episode.project_id,
+    req.userId
+  );
 
-  if (!hasAccess) {
+  if (!isOwner && !hasCollaboratorAccess) {
     throw new ApiError(403, 'Access denied to this episode');
   }
 
   // Get comments with user info
-  const result = await query(
+  const result = await query<CommentWithUser>(
     `SELECT c.*, u.full_name, u.avatar_url, u.email
      FROM comments c
      JOIN users u ON u.id = c.user_id
@@ -70,24 +64,26 @@ export const getEpisodeComments = async (req: AuthRequest, res: Response) => {
 
   // Organize comments into a tree structure (parent comments and their replies)
   const comments = result.rows;
-  const commentMap = new Map<string, any>();
-  const rootComments: any[] = [];
+  const commentMap = new Map<string, CommentWithReplies>();
+  const rootComments: CommentWithReplies[] = [];
 
   // First pass: create map of all comments
-  comments.forEach((comment: any) => {
+  comments.forEach((comment) => {
     commentMap.set(comment.id, { ...comment, replies: [] });
   });
 
   // Second pass: organize into tree
-  comments.forEach((comment: any) => {
+  comments.forEach((comment) => {
     const commentWithReplies = commentMap.get(comment.id);
-    if (comment.parent_comment_id) {
-      const parent = commentMap.get(comment.parent_comment_id);
-      if (parent) {
-        parent.replies.push(commentWithReplies);
+    if (commentWithReplies) {
+      if (comment.parent_comment_id) {
+        const parent = commentMap.get(comment.parent_comment_id);
+        if (parent) {
+          parent.replies.push(commentWithReplies);
+        }
+      } else {
+        rootComments.push(commentWithReplies);
       }
-    } else {
-      rootComments.push(commentWithReplies);
     }
   });
 
@@ -106,7 +102,7 @@ export const addComment = async (req: AuthRequest, res: Response) => {
   const { content, timestampSeconds } = req.body as CreateCommentInput;
 
   // Check if episode exists and user has access
-  const episodeResult = await query<Episode>(
+  const episodeResult = await query<EpisodeWithProjectOwner>(
     `SELECT e.*, p.user_id as project_owner_id
      FROM episodes e
      JOIN projects p ON p.id = e.project_id
@@ -121,11 +117,14 @@ export const addComment = async (req: AuthRequest, res: Response) => {
   const episode = episodeResult.rows[0];
 
   // Check if user has comment permission
-  const hasAccess =
-    episode.project_owner_id === req.userId ||
-    (await checkCollaboratorPermission(episode.project_id, req.userId, 'comment'));
+  const isOwner = await checkProjectOwnership(episode.project_id, req.userId);
+  const hasPermission = isOwner || await checkCollaboratorPermission(
+    episode.project_id,
+    req.userId,
+    'comment'
+  );
 
-  if (!hasAccess) {
+  if (!hasPermission) {
     throw new ApiError(403, 'You need comment permission to add comments');
   }
 
@@ -180,15 +179,14 @@ export const replyToComment = async (req: AuthRequest, res: Response) => {
   const parentComment = parentCommentResult.rows[0];
 
   // Check if user has comment permission
-  const hasAccess =
-    parentComment.project_owner_id === req.userId ||
-    (await checkCollaboratorPermission(
-      parentComment.project_id,
-      req.userId,
-      'comment'
-    ));
+  const isOwner = await checkProjectOwnership(parentComment.project_id, req.userId);
+  const hasPermission = isOwner || await checkCollaboratorPermission(
+    parentComment.project_id,
+    req.userId,
+    'comment'
+  );
 
-  if (!hasAccess) {
+  if (!hasPermission) {
     throw new ApiError(403, 'You need comment permission to reply');
   }
 
@@ -285,7 +283,10 @@ export const deleteComment = async (req: AuthRequest, res: Response) => {
   const comment = commentResult.rows[0];
 
   // Only comment author or project owner can delete
-  if (comment.user_id !== req.userId && comment.project_owner_id !== req.userId) {
+  const isCommentAuthor = comment.user_id === req.userId;
+  const isOwner = await checkProjectOwnership(comment.project_id, req.userId);
+
+  if (!isCommentAuthor && !isOwner) {
     throw new ApiError(403, 'You can only delete your own comments or as project owner');
   }
 
@@ -321,13 +322,16 @@ export const resolveComment = async (req: AuthRequest, res: Response) => {
 
   const comment = commentResult.rows[0];
 
-  // Check if user has edit permission or is comment author
-  const hasAccess =
-    comment.user_id === req.userId ||
-    comment.project_owner_id === req.userId ||
-    (await checkCollaboratorPermission(comment.project_id, req.userId, 'edit'));
+  // Check if user has permission to resolve (comment author, project owner, or edit permission)
+  const isCommentAuthor = comment.user_id === req.userId;
+  const isOwner = await checkProjectOwnership(comment.project_id, req.userId);
+  const hasEditPermission = await checkCollaboratorPermission(
+    comment.project_id,
+    req.userId,
+    'edit'
+  );
 
-  if (!hasAccess) {
+  if (!isCommentAuthor && !isOwner && !hasEditPermission) {
     throw new ApiError(403, 'You need edit permission to resolve comments');
   }
 
@@ -344,47 +348,4 @@ export const resolveComment = async (req: AuthRequest, res: Response) => {
     success: true,
     data: result.rows[0],
   });
-};
-
-// Helper functions
-const checkCollaboratorAccess = async (
-  projectId: string,
-  userId: string
-): Promise<boolean> => {
-  const result = await query(
-    `SELECT id FROM project_collaborators
-     WHERE project_id = $1 AND user_id = $2`,
-    [projectId, userId]
-  );
-
-  return result.rows.length > 0;
-};
-
-const checkCollaboratorPermission = async (
-  projectId: string,
-  userId: string,
-  requiredPermission: 'view' | 'comment' | 'edit'
-): Promise<boolean> => {
-  const result = await query(
-    `SELECT permission_level FROM project_collaborators
-     WHERE project_id = $1 AND user_id = $2`,
-    [projectId, userId]
-  );
-
-  if (result.rows.length === 0) {
-    return false;
-  }
-
-  const permission = result.rows[0].permission_level;
-
-  // Permission hierarchy: edit > comment > view
-  if (requiredPermission === 'view') {
-    return true; // Anyone with access has view permission
-  } else if (requiredPermission === 'comment') {
-    return permission === 'comment' || permission === 'edit';
-  } else if (requiredPermission === 'edit') {
-    return permission === 'edit';
-  }
-
-  return false;
 };
