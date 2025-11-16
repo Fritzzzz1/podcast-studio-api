@@ -5,6 +5,23 @@ import {
   CreateEpisodeInput,
   UpdateEpisodeInput,
 } from '../validators/episode.validator';
+import {
+  checkProjectOwnership,
+  checkCollaboratorAccess,
+  checkEditAccess,
+  requireProjectAccess,
+  requireProjectPermission,
+} from '../utils/accessControl';
+import { buildUpdateQuery, keysToSnakeCase } from '../utils/queryBuilder';
+import {
+  requireStorageQuota,
+  updateStorageUsage,
+  validateFileSize,
+} from '../utils/storage';
+import {
+  generatePresignedUploadUrl,
+  generatePresignedDownloadUrl,
+} from '../utils/s3';
 
 export const createEpisode = async (req: AuthRequest, res: Response) => {
   if (!req.userId) {
@@ -27,11 +44,10 @@ export const createEpisode = async (req: AuthRequest, res: Response) => {
   const project = projectResult.rows[0];
 
   // Check if user is owner or collaborator with edit permission
-  const hasAccess =
-    project.user_id === req.userId ||
-    (await checkEditAccess(projectId, req.userId));
+  const isOwner = await checkProjectOwnership(projectId, req.userId);
+  const hasEditAccess = await checkEditAccess(projectId, req.userId);
 
-  if (!hasAccess) {
+  if (!isOwner && !hasEditAccess) {
     throw new ApiError(403, 'Access denied to this project');
   }
 
@@ -80,11 +96,10 @@ export const getEpisode = async (req: AuthRequest, res: Response) => {
 
   const project = projectResult.rows[0];
 
-  const hasAccess =
-    project.user_id === req.userId ||
-    (await checkProjectAccess(episode.project_id, req.userId));
+  const isOwner = await checkProjectOwnership(episode.project_id, req.userId);
+  const isCollaborator = await checkCollaboratorAccess(episode.project_id, req.userId);
 
-  if (!hasAccess) {
+  if (!isOwner && !isCollaborator) {
     throw new ApiError(403, 'Access denied to this episode');
   }
 
@@ -126,51 +141,25 @@ export const updateEpisode = async (req: AuthRequest, res: Response) => {
 
   const project = projectResult.rows[0];
 
-  const hasEditAccess =
-    project.user_id === req.userId ||
-    (await checkEditAccess(episode.project_id, req.userId));
+  const isOwner = await checkProjectOwnership(episode.project_id, req.userId);
+  const hasEditAccess = await checkEditAccess(episode.project_id, req.userId);
 
-  if (!hasEditAccess) {
+  if (!isOwner && !hasEditAccess) {
     throw new ApiError(403, 'Access denied to edit this episode');
   }
 
-  const updateFields: string[] = [];
-  const values: unknown[] = [];
-  let paramIndex = 1;
+  // Convert camelCase to snake_case for database columns
+  const dbUpdates = keysToSnakeCase(updates);
 
-  if (updates.title !== undefined) {
-    updateFields.push(`title = $${paramIndex++}`);
-    values.push(updates.title);
-  }
-
-  if (updates.description !== undefined) {
-    updateFields.push(`description = $${paramIndex++}`);
-    values.push(updates.description);
-  }
-
-  if (updates.durationSeconds !== undefined) {
-    updateFields.push(`duration_seconds = $${paramIndex++}`);
-    values.push(updates.durationSeconds);
-  }
-
-  if (updates.status !== undefined) {
-    updateFields.push(`status = $${paramIndex++}`);
-    values.push(updates.status);
-  }
-
-  if (updateFields.length === 0) {
-    throw new ApiError(400, 'No fields to update');
-  }
-
-  values.push(id);
-
-  const result = await query<Episode>(
-    `UPDATE episodes
-     SET ${updateFields.join(', ')}
-     WHERE id = $${paramIndex}
-     RETURNING *`,
-    values
+  // Build dynamic update query
+  const { query: updateQuery, params } = buildUpdateQuery(
+    'episodes',
+    dbUpdates,
+    'id = $1',
+    [id]
   );
+
+  const result = await query<Episode>(updateQuery, params);
 
   res.status(200).json({
     success: true,
@@ -209,11 +198,10 @@ export const deleteEpisode = async (req: AuthRequest, res: Response) => {
 
   const project = projectResult.rows[0];
 
-  const hasEditAccess =
-    project.user_id === req.userId ||
-    (await checkEditAccess(episode.project_id, req.userId));
+  const isOwner = await checkProjectOwnership(episode.project_id, req.userId);
+  const hasEditAccess = await checkEditAccess(episode.project_id, req.userId);
 
-  if (!hasEditAccess) {
+  if (!isOwner && !hasEditAccess) {
     throw new ApiError(403, 'Access denied to delete this episode');
   }
 
@@ -232,6 +220,7 @@ export const getUploadUrl = async (req: AuthRequest, res: Response) => {
   }
 
   const { id } = req.params;
+  const { contentType = 'audio/mpeg', fileName } = req.body;
 
   // Get episode
   const episodeResult = await query<Episode>(
@@ -257,24 +246,25 @@ export const getUploadUrl = async (req: AuthRequest, res: Response) => {
 
   const project = projectResult.rows[0];
 
-  const hasEditAccess =
-    project.user_id === req.userId ||
-    (await checkEditAccess(episode.project_id, req.userId));
+  const isOwner = await checkProjectOwnership(episode.project_id, req.userId);
+  const hasEditAccess = await checkEditAccess(episode.project_id, req.userId);
 
-  if (!hasEditAccess) {
+  if (!isOwner && !hasEditAccess) {
     throw new ApiError(403, 'Access denied to upload to this episode');
   }
 
-  // TODO: Generate pre-signed S3 URL
-  // For now, return a placeholder URL
-  const uploadUrl = `https://s3.amazonaws.com/podcast-studio/${episode.id}/audio.mp3?signature=placeholder`;
+  // Generate pre-signed S3 URL
+  const result = await generatePresignedUploadUrl(
+    req.userId,
+    contentType,
+    episode.project_id,
+    episode.id,
+    fileName
+  );
 
   res.status(200).json({
     success: true,
-    data: {
-      uploadUrl,
-      expiresIn: 900, // 15 minutes
-    },
+    data: result,
   });
 };
 
@@ -310,13 +300,18 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
 
   const project = projectResult.rows[0];
 
-  const hasEditAccess =
-    project.user_id === req.userId ||
-    (await checkEditAccess(episode.project_id, req.userId));
+  const isOwner = await checkProjectOwnership(episode.project_id, req.userId);
+  const hasEditAccess = await checkEditAccess(episode.project_id, req.userId);
 
-  if (!hasEditAccess) {
+  if (!isOwner && !hasEditAccess) {
     throw new ApiError(403, 'Access denied');
   }
+
+  // Validate file size (max 500MB)
+  validateFileSize(audioFileSizeBytes);
+
+  // Check if user has enough storage quota
+  await requireStorageQuota(req.userId, audioFileSizeBytes);
 
   // Update episode with file info
   const result = await query<Episode>(
@@ -328,43 +323,10 @@ export const completeUpload = async (req: AuthRequest, res: Response) => {
   );
 
   // Update user storage usage
-  await query(
-    `UPDATE users
-     SET storage_used_bytes = storage_used_bytes + $1
-     WHERE id = $2`,
-    [audioFileSizeBytes, req.userId]
-  );
+  await updateStorageUsage(req.userId, audioFileSizeBytes);
 
   res.status(200).json({
     success: true,
     data: result.rows[0],
   });
-};
-
-// Helper functions
-const checkProjectAccess = async (
-  projectId: string,
-  userId: string
-): Promise<boolean> => {
-  const result = await query(
-    `SELECT id FROM project_collaborators
-     WHERE project_id = $1 AND user_id = $2`,
-    [projectId, userId]
-  );
-
-  return result.rows.length > 0;
-};
-
-const checkEditAccess = async (
-  projectId: string,
-  userId: string
-): Promise<boolean> => {
-  const result = await query(
-    `SELECT id FROM project_collaborators
-     WHERE project_id = $1 AND user_id = $2
-     AND permission_level IN ('edit')`,
-    [projectId, userId]
-  );
-
-  return result.rows.length > 0;
 };

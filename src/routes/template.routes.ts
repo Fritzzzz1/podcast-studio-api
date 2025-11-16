@@ -1,12 +1,13 @@
 import { Router } from 'express';
 import { asyncHandler } from '../middleware/asyncHandler';
 import { authenticate } from '../middleware/auth';
-import { validate } from '../middleware/validate';
+import { validate, validateQuery } from '../middleware/validate';
 import * as templateController from '../controllers/template.controller';
 import {
   createTemplateSchema,
   updateTemplateSchema,
-  listTemplatesSchema,
+  listTemplatesQuerySchema,
+  rateTemplateSchema,
 } from '../validators/template.validator';
 
 const router = Router();
@@ -18,7 +19,7 @@ const router = Router();
  */
 router.get(
   '/',
-  validate(listTemplatesSchema),
+  validateQuery(listTemplatesQuerySchema),
   asyncHandler(templateController.listTemplates)
 );
 
@@ -79,7 +80,12 @@ router.post('/:id/download', asyncHandler(templateController.incrementDownloadCo
  * @desc    Rate a template
  * @access  Private
  */
-router.post('/:id/rate', authenticate, asyncHandler(templateController.rateTemplate));
+router.post(
+  '/:id/rate',
+  authenticate,
+  validate(rateTemplateSchema),
+  asyncHandler(templateController.rateTemplate)
+);
 
 /**
  * @route   GET /api/v1/templates/:id/ratings

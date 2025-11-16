@@ -1,6 +1,17 @@
 import { Response } from 'express';
 import { query } from '../db';
 import { AuthRequest, ApiError } from '../types';
+import {
+  buildUpdateQuery,
+  keysToSnakeCase,
+  sanitizeSortColumn,
+  sanitizeSortDirection,
+} from '../utils/queryBuilder';
+import {
+  parsePaginationParams,
+  calculateOffset,
+  executePaginatedQuery,
+} from '../utils/pagination';
 
 interface Template {
   id: string;
@@ -56,8 +67,14 @@ export const listTemplates = async (req: AuthRequest, res: Response) => {
     search,
   } = req.query as unknown as ListTemplatesQuery;
 
-  const offset = (page - 1) * limit;
+  // Parse pagination parameters
+  const paginationParams = parsePaginationParams(
+    { page, limit },
+    { page: 1, limit: 20 }
+  );
+  const offset = calculateOffset(paginationParams.page, paginationParams.limit);
 
+  // Build WHERE conditions
   const conditions: string[] = ['is_public = true'];
   const values: unknown[] = [];
   let paramIndex = 1;
@@ -80,7 +97,7 @@ export const listTemplates = async (req: AuthRequest, res: Response) => {
 
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
-  // Map sortBy to actual column names
+  // Map sortBy to actual column names and sanitize
   const columnMap: Record<string, string> = {
     downloads: 'download_count',
     rating: 'average_rating',
@@ -88,36 +105,40 @@ export const listTemplates = async (req: AuthRequest, res: Response) => {
     name: 'name',
   };
 
-  const orderByColumn = columnMap[sortBy] || 'download_count';
-
-  // Get total count
-  const countResult = await query<{ count: string }>(
-    `SELECT COUNT(*) FROM templates ${whereClause}`,
-    values
+  const mappedSortBy = columnMap[sortBy] || sortBy;
+  const orderByColumn = sanitizeSortColumn(
+    mappedSortBy,
+    ['download_count', 'average_rating', 'created_at', 'name'],
+    'download_count'
   );
+  const sortDirection = sanitizeSortDirection('desc', 'DESC');
 
-  const total = parseInt(countResult.rows[0].count, 10);
+  // Prepare query parameters for data query
+  const dataParams = [...values, paginationParams.limit, offset];
 
-  // Get templates
-  values.push(limit, offset);
-  const result = await query<Template>(
+  // Execute paginated query
+  const result = await executePaginatedQuery<Template>(
     `SELECT t.*, u.full_name as creator_name, u.avatar_url as creator_avatar
      FROM templates t
      LEFT JOIN users u ON u.id = t.creator_id
      ${whereClause}
-     ORDER BY ${orderByColumn} DESC
+     ORDER BY ${orderByColumn} ${sortDirection}
      LIMIT $${paramIndex++} OFFSET $${paramIndex}`,
-    values
+    dataParams,
+    `SELECT COUNT(*) FROM templates ${whereClause}`,
+    values,
+    paginationParams.page,
+    paginationParams.limit
   );
 
   res.status(200).json({
     success: true,
     data: {
-      templates: result.rows,
-      total,
-      page,
-      pages: Math.ceil(total / limit),
-      limit,
+      templates: result.data,
+      total: result.total,
+      page: result.page,
+      pages: result.pages,
+      limit: result.limit,
     },
   });
 };
@@ -219,54 +240,23 @@ export const updateTemplate = async (req: AuthRequest, res: Response) => {
     throw new ApiError(403, 'Only template creator can update the template');
   }
 
-  const updateFields: string[] = [];
-  const values: unknown[] = [];
-  let paramIndex = 1;
+  // Convert camelCase to snake_case and handle special cases
+  const dbUpdates = keysToSnakeCase(updates as Record<string, unknown>);
 
-  if (updates.name !== undefined) {
-    updateFields.push(`name = $${paramIndex++}`);
-    values.push(updates.name);
-  }
-
-  if (updates.description !== undefined) {
-    updateFields.push(`description = $${paramIndex++}`);
-    values.push(updates.description);
-  }
-
-  if (updates.icon !== undefined) {
-    updateFields.push(`icon = $${paramIndex++}`);
-    values.push(updates.icon);
-  }
-
-  if (updates.category !== undefined) {
-    updateFields.push(`category = $${paramIndex++}`);
-    values.push(updates.category);
-  }
-
+  // Handle JSON fields - config needs to be stringified
   if (updates.config !== undefined) {
-    updateFields.push(`config = $${paramIndex++}`);
-    values.push(JSON.stringify(updates.config));
+    dbUpdates.config = JSON.stringify(updates.config);
   }
 
-  if (updates.isPublic !== undefined) {
-    updateFields.push(`is_public = $${paramIndex++}`);
-    values.push(updates.isPublic);
-  }
-
-  if (updateFields.length === 0) {
-    throw new ApiError(400, 'No fields to update');
-  }
-
-  updateFields.push('updated_at = NOW()');
-  values.push(id);
-
-  const result = await query<Template>(
-    `UPDATE templates
-     SET ${updateFields.join(', ')}
-     WHERE id = $${paramIndex}
-     RETURNING *`,
-    values
+  // Build the update query
+  const { query: updateQuery, params } = buildUpdateQuery(
+    'templates',
+    dbUpdates,
+    'id = $1',
+    [id]
   );
+
+  const result = await query<Template>(updateQuery, params);
 
   res.status(200).json({
     success: true,
@@ -339,33 +329,35 @@ export const getMyTemplates = async (req: AuthRequest, res: Response) => {
   }
 
   const { page = 1, limit = 20 } = req.query as unknown as ListTemplatesQuery;
-  const offset = (page - 1) * limit;
 
-  // Get total count
-  const countResult = await query<{ count: string }>(
-    'SELECT COUNT(*) FROM templates WHERE creator_id = $1',
-    [req.userId]
+  // Parse pagination parameters
+  const paginationParams = parsePaginationParams(
+    { page, limit },
+    { page: 1, limit: 20 }
   );
+  const offset = calculateOffset(paginationParams.page, paginationParams.limit);
 
-  const total = parseInt(countResult.rows[0].count, 10);
-
-  // Get user's templates
-  const result = await query<Template>(
+  // Execute paginated query
+  const result = await executePaginatedQuery<Template>(
     `SELECT * FROM templates
      WHERE creator_id = $1
      ORDER BY created_at DESC
      LIMIT $2 OFFSET $3`,
-    [req.userId, limit, offset]
+    [req.userId, paginationParams.limit, offset],
+    'SELECT COUNT(*) FROM templates WHERE creator_id = $1',
+    [req.userId],
+    paginationParams.page,
+    paginationParams.limit
   );
 
   res.status(200).json({
     success: true,
     data: {
-      templates: result.rows,
-      total,
-      page,
-      pages: Math.ceil(total / limit),
-      limit,
+      templates: result.data,
+      total: result.total,
+      page: result.page,
+      pages: result.pages,
+      limit: result.limit,
     },
   });
 };
